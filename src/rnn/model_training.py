@@ -3,6 +3,9 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Embedding, SimpleRNN, Bidirectional, Dense, Dropout
 from sklearn.metrics import f1_score
 
+import sys
+sys.path.append('../../src/rnn')
+
 def create_keras_rnn(vocab_size, num_classes, config):
     """Create Keras RNN model"""
     model = Sequential([Embedding(vocab_size, 128, input_length=100, name='embedding')])
@@ -45,7 +48,7 @@ def train_and_save_models(data, configs):
         macro_f1 = f1_score(data['test_y'], y_pred, average='macro')
         
         # Save model
-        model.save(f'../../output/rnn/models/{name}.h5')
+        model.save(f'../../models/{name}.h5')
         
         results[name] = {
             'config': config,
