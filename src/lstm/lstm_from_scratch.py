@@ -56,7 +56,6 @@ class LSTMCell:
         if self.W_ih is None:
             raise ValueError("Weights not loaded")
             
-        # Split weights for gates
         batch_size = x.shape[0]
         
         # Calculate gates: input, forget, cell, output
@@ -65,7 +64,7 @@ class LSTMCell:
         # Split into 4 parts for i, f, g, o gates
         i, f, g, o = np.split(gates, 4, axis=1)
         
-        # Apply activations
+        # activations
         i = 1 / (1 + np.exp(-i))  # input gate: sigmoid
         f = 1 / (1 + np.exp(-f))  # forget gate: sigmoid
         g = np.tanh(g)            # cell gate: tanh
@@ -136,7 +135,7 @@ class LSTMLayer:
             
         backward_outputs = np.stack(backward_outputs[::-1], axis=1)
         
-        # Concatenate forward and backward
+        # Concatenate forward and backward (default keras behavior is to concat)
         outputs = np.concatenate([forward_outputs, backward_outputs], axis=-1)
         return outputs
 
@@ -169,7 +168,7 @@ class DenseLayer:
         elif self.activation == 'relu':
             outputs = np.maximum(0, outputs)
         elif self.activation == 'sigmoid':
-            outputs = 1 / (1 + np.exp(-np.clip(outputs, -250, 250)))
+            outputs = 1 / (1 + np.exp(-(outputs)))
         
         if len(original_shape) == 3:
             outputs = outputs.reshape(batch_size, seq_length, self.output_size)
@@ -215,37 +214,53 @@ class LSTMModel:
         for layer in keras_model.layers:
             if ('lstm' in layer.name.lower() or 'bidirectional' in layer.name.lower()) and lstm_layer_idx < len(self.lstm_layers):
                 weights = layer.get_weights()
+                hidden_size = self.hidden_sizes[lstm_layer_idx]
                 
                 if 'bidirectional' in layer.name.lower():
-                    # For bidirectional layers, TensorFlow stores:
-                    # [forward_W_ih, forward_W_hh, forward_b_ih, forward_b_hh,
-                    #  backward_W_ih, backward_W_hh, backward_b_ih, backward_b_hh]
-                    weights_dict = {
-                        'forward_W_ih': weights[0],
-                        'forward_W_hh': weights[1], 
-                        'forward_b_ih': weights[2][:self.hidden_sizes[lstm_layer_idx]],
-                        'forward_b_hh': weights[2][self.hidden_sizes[lstm_layer_idx]:],
-                        'backward_W_ih': weights[3],
-                        'backward_W_hh': weights[4],
-                        'backward_b_ih': weights[5][:self.hidden_sizes[lstm_layer_idx]],
-                        'backward_b_hh': weights[5][self.hidden_sizes[lstm_layer_idx]:]
-                    }
+                    # For bidirectional layers with 6 weight arrays:
+                    # [fw_W_ih, fw_W_hh, fw_bias, bw_W_ih, bw_W_hh, bw_bias]
+                    if len(weights) == 6:
+                        fw_W_ih, fw_W_hh, fw_bias = weights[0], weights[1], weights[2]
+                        bw_W_ih, bw_W_hh, bw_bias = weights[3], weights[4], weights[5]
+                        
+                        # in keras, the bias is stored as one vector containing all gate biases
+                        # i use the full bias as b_ih and set b_hh to zeros
+                        # because keras combines what PyTorch separates into b_ih and b_hh
+
+                        weights_dict = {
+                            'forward_W_ih': fw_W_ih,
+                            'forward_W_hh': fw_W_hh,
+                            'forward_b_ih': fw_bias,
+                            'forward_b_hh': np.zeros_like(fw_bias),
+                            'backward_W_ih': bw_W_ih,
+                            'backward_W_hh': bw_W_hh,
+                            'backward_b_ih': bw_bias,  
+                            'backward_b_hh': np.zeros_like(bw_bias)  
+                        }
+                    else:
+                        raise ValueError(f"Unexpected bidirectional weight structure with {len(weights)} arrays")
                 else:
-                    # For unidirectional LSTM layers, TensorFlow stores:
-                    # [W_ih, W_hh, b] where b is concatenated b_ih and b_hh
-                    weights_dict = {
-                        'forward_W_ih': weights[0],
-                        'forward_W_hh': weights[1],
-                        'forward_b_ih': weights[2][:self.hidden_sizes[lstm_layer_idx]],
-                        'forward_b_hh': weights[2][self.hidden_sizes[lstm_layer_idx]:]
-                    }
+                    # For unidirectional LSTM layers
+                    # [W_ih, W_hh, bias]
+                    if len(weights) >= 3:
+                        weights_dict = {
+                            'forward_W_ih': weights[0],
+                            'forward_W_hh': weights[1],
+                            'forward_b_ih': weights[2],  
+                            'forward_b_hh': np.zeros_like(weights[2]) 
+                        }
+                    else:
+                        raise ValueError(f"Unexpected unidirectional weight structure with {len(weights)} arrays")
                 
                 self.lstm_layers[lstm_layer_idx].load_weights(weights_dict)
                 lstm_layer_idx += 1
         
         # Load dense weights
-        dense_weights = keras_model.get_layer('dense_output').get_weights()
-        self.dense.load_weights(dense_weights[0], dense_weights[1])
+        for layer in keras_model.layers:
+            if 'dense' in layer.name.lower():
+                dense_weights = layer.get_weights()
+                self.dense.load_weights(dense_weights[0], dense_weights[1])
+                break
         
         print(f"Weights loaded from {keras_model_path}")
         
@@ -261,8 +276,17 @@ class LSTMModel:
         for lstm_layer in self.lstm_layers:
             x = lstm_layer.forward(x)
             
-        # Use last timestep for classification
-        x = x[:, -1, :]  
+        # Get the last hidden state of the forward pass (from the last time step)
+        forward_state = x[:, -1, :self.hidden_sizes[-1]]
+        
+        # Get the last hidden state of the backward pass (from the first time step)
+        backward_state = x[:, 0, self.hidden_sizes[-1]:] if self.bidirectional else None
+        
+        # Concatenate to get the final bidirectional state
+        if self.bidirectional:
+            x = np.concatenate([forward_state, backward_state], axis=-1)
+        else:
+            x = forward_state
         
         # Dense layer
         outputs = self.dense.forward(x)
@@ -277,3 +301,4 @@ class LSTMModel:
     def predict_proba(self, inputs: np.ndarray) -> np.ndarray:
         """Get prediction probabilities"""
         return self.forward(inputs)
+
