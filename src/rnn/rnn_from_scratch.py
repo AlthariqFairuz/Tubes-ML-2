@@ -237,8 +237,14 @@ class SimpleRNNModel:
         for rnn_layer in self.rnn_layers:
             x = rnn_layer.forward(x)
             
-        # Use last timestep for classification
-        x = x[:, -1, :]  # (batch_size, hidden_size * num_directions)
+        forward_state = x[:, -1, :self.hidden_sizes[-1]]  # Get last time step output for each sequence
+
+        backward_state = x[:,0,self.hidden_sizes[-1]:] if self.bidirectional else None
+        
+        if self.bidirectional:
+            x = np.concatenate([forward_state, backward_state], axis=-1)
+        else:
+            x = forward_state
         
         # Dense layer
         outputs = self.dense.forward(x)
