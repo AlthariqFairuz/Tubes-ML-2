@@ -131,3 +131,9 @@ jupyter notebook lstm.ipynb
 
 **Bidirectional vs Unidirectional**: Bidirectional models can use future context for predictions, often improving performance on sequence classification tasks.
 
+## Pembagian Tugas
+| NIM  | Tugas |
+| ------------- | ------------- |
+| 13522027  | RNN  |
+| 13522067  | CNN  |
+| 13522095  | LSTM  |
